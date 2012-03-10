@@ -59,6 +59,11 @@ To store categories in the field, you would first create the category and then a
     for art in category.article_set.all():
         print art.title
 
+To enable embedding, just add the embed=True keyword argument to the field:
+
+    class Article(models.Model):
+        categories = MongoDBManyToManyField(Category, embed=True)
+
 License
 -------
 
