@@ -64,8 +64,8 @@ To enable embedding, just add the embed=True keyword argument to the field:
     class Article(models.Model):
         categories = MongoDBManyToManyField(Category, embed=True)
 
-License
--------
+BSD License
+-----------
 
 Copyright (c) 2012, Kenneth Falck
 All rights reserved.
