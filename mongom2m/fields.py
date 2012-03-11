@@ -1,5 +1,6 @@
 from djangotoolbox.fields import ListField, DictField, EmbeddedModelField, AbstractIterableField
 from pymongo.objectid import ObjectId
+from django.forms import ModelMultipleChoiceField
 from django.db import models
 
 class MongoDBM2MQuerySet(object):
@@ -129,6 +130,16 @@ class MongoDBM2MRelatedManager(object):
         self.objects = []
         return self
     
+    def __iter__(self):
+        """
+        Iterator is used by Django admin's ModelMultipleChoiceField.
+        """
+        for obj in self.objects:
+            if not obj['obj']:
+                # Load referred instance from db and keep in memory
+                obj['obj'] = self.rel.objects.get(pk=obj['pk'])
+            yield obj['obj']
+    
     def all(self):
         """
         Return all the related objects as a query set. If embedding
@@ -157,18 +168,27 @@ class MongoDBM2MRelatedManager(object):
         we can store in the internal objects list.
         """
         if self.embed:
-            # Convert the embedded value to a model
-            data = {}
-            for field in self.rel._meta.fields:
-                try:
-                    data[str(field.attname)] = embedded_instance[field.column]
-                except KeyError:
-                    pass
-            obj = self.rel(**data)
+            if isinstance(embedded_instance, dict):
+                # Convert the embedded value from dict to model
+                data = {}
+                for field in self.rel._meta.fields:
+                    try:
+                        data[str(field.attname)] = embedded_instance[field.column]
+                    except KeyError:
+                        pass
+                obj = self.rel(**data)
+            else:
+                # Assume it's already a model
+                obj = embedded_instance
             return {'pk':obj.pk, 'obj':obj}
         else:
             # No embedded value, only ObjectId
-            return {'pk':embedded_instance[self.rel._meta.pk.column], 'obj':None}
+            if isinstance(embedded_instance, dict):
+                # Get the id value from the dict
+                return {'pk':embedded_instance[self.rel._meta.pk.column], 'obj':None}
+            else:
+                # Assume it's already a model
+                return {'pk':embedded_instance.id, 'obj':None}
     
     def to_python(self, values):
         """
@@ -271,4 +291,12 @@ class MongoDBManyToManyField(models.Field):
             manager.to_python(value)
             value = manager
         return value
+    
+    def formfield(self, **kwargs):
+        defaults = {
+            'form_class': ModelMultipleChoiceField,
+            'queryset': self._mongom2m_rel.objects.all(),
+        }
+        defaults.update(kwargs)
+        return super(MongoDBManyToManyField, self).formfield(**defaults)
 
