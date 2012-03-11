@@ -8,7 +8,7 @@ setup(
     packages=['mongom2m'],
     url='https://github.com/kennu/django-mongom2m',
     license='BSD licence, see LICENCE.txt',
-    description='A ManyToManyField for django-mongodb-engine'
+    description='A ManyToManyField for django-mongodb-engine',
     long_description='A ManyToManyField for django-mongodb-engine',
     zip_safe=False,
 )
