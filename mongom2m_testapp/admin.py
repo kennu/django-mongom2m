@@ -23,6 +23,7 @@ class TestBookAdmin(admin.ModelAdmin):
     pass
 
 admin.site.register(models.TestCategory, TestCategoryAdmin)
+admin.site.register(models.TestTag, TestTagAdmin)
 admin.site.register(models.TestArticle, TestArticleAdmin)
 admin.site.register(models.TestAuthor, TestAuthorAdmin)
 admin.site.register(models.TestBook, TestBookAdmin)
