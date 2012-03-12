@@ -235,14 +235,14 @@ def create_through(model, to):
     # a ForeignKey relationship to both models.
     obj_name = to._meta.object_name + 'Relationship'
     class Through(models.Model):
-        print 'Defining class for', obj_name
-        _test = obj_name
+        class Meta:
+            auto_created = True
         locals()[to._meta.object_name.lower()] = models.ForeignKey(to)
         locals()[model._meta.object_name.lower()] = models.ForeignKey(model)
     # Remove old model from Django's model registry, because it would be a duplicate
     from django.db.models.loading import cache
     model_dict = cache.app_models.get(Through._meta.app_label)
-    print Through._meta.app_label, model_dict
+    #print Through._meta.app_label, model_dict
     del model_dict[Through._meta.module_name]
     # Rename the model
     Through._meta.object_name = obj_name
@@ -279,7 +279,7 @@ class MongoDBManyToManyRel(object):
         # Required for Django admin/forms to work.
         self.multiple = True
         self.field_name = self.to._meta.pk.name
-        self.limit_choices_to = None
+        self.limit_choices_to = {}
     
     def is_hidden(self):
         return False
@@ -320,7 +320,6 @@ class MongoDBManyToManyField(models.ManyToManyField):#models.Field):
     def contribute_to_class(self, model, name, *args, **kwargs):
         self.rel.model = model
         self.rel.through = create_through(self.rel.model, self.rel.to)
-        print 'Created through for', self.rel.model, self.rel.to, '=>', self.rel.through._test
         # Call Field, not super, to skip Django's ManyToManyField extra stuff we don't need
         models.Field.contribute_to_class(self, model, name, *args, **kwargs)
         # Determine related name automatically unless set
@@ -338,7 +337,7 @@ class MongoDBManyToManyField(models.ManyToManyField):#models.Field):
         setattr(model, self.name, descriptor)
     
     def db_type(self, *args, **kwargs):
-        return 'MongoDBManyToManyField'
+        return None
     
     def get_db_prep_value(self, value, connection, prepared=False):
         # The Python value is a MongoDBM2MRelatedManager, and we'll store the models it contains as a special list.
@@ -357,12 +356,5 @@ class MongoDBManyToManyField(models.ManyToManyField):#models.Field):
             value = manager
         return value
     
-    def formfield(self, **kwargs):
-        defaults = {
-            'form_class': ModelMultipleChoiceField,
-            'queryset': self.rel.to.objects.all(),
-        }
-        defaults.update(kwargs)
-        #return super(MongoDBManyToManyField, self).formfield(**defaults)
-        return models.Field.formfield(self, **defaults)
-
+#    def formfield(self, **kwargs):
+#        return super(MongoDBManyToManyField, self).formfield(**kwargs)
