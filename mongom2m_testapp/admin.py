@@ -20,7 +20,7 @@ class TestAuthorAdmin(admin.ModelAdmin):
     list_display = ['name']
 
 class TestBookAdmin(admin.ModelAdmin):
-    pass
+    raw_id_fields = ['authors']
 
 admin.site.register(models.TestCategory, TestCategoryAdmin)
 admin.site.register(models.TestTag, TestTagAdmin)
