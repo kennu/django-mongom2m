@@ -258,10 +258,15 @@ class MongoDBManyToManyRelationDescriptor(object):
     """
     This descriptor returns the 'through' model used in Django admin to access the
     ManyToManyField objects for inlines. It's implemented by the MongoDBManyToManyThrough
-    class, which simulates a data model.
+    class, which simulates a data model. This class also handles the attribute assignment
+    from the MongoDB raw fields, which must be properly converted to Python objects.
     """
-    def __init__(self, through):
+    def __init__(self, field, through):
+        self.field = field
         self.through = through
+    
+    def __set__(self, obj, value):
+        obj.__dict__[self.field.name] = self.field.to_python(value)
 
 class MongoDBManyToManyRel(object):
     """
@@ -331,13 +336,10 @@ class MongoDBManyToManyField(models.ManyToManyField):#models.Field):
         # Add the reverse relationship
         setattr(self.rel.to, self.rel.related_name, MongoDBM2MReverseDescriptor(model, self, self.rel.to, self.rel.embed))
         # Add the relationship descriptor to the model class for Django admin/forms to work
-        #print 'Creating descriptor for', self.rel.through
-        descriptor = MongoDBManyToManyRelationDescriptor(self.rel.through)
-        #print 'Setting descriptor as', self.name
-        setattr(model, self.name, descriptor)
+        setattr(model, self.name, MongoDBManyToManyRelationDescriptor(self, self.rel.through))
     
     def db_type(self, *args, **kwargs):
-        return None
+        return 'list'
     
     def get_db_prep_value(self, value, connection, prepared=False):
         # The Python value is a MongoDBM2MRelatedManager, and we'll store the models it contains as a special list.
