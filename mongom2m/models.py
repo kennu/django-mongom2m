@@ -5,10 +5,16 @@ from django_mongodb_engine.contrib import MongoDBManager
 class TestCategory(models.Model):
     objects = MongoDBManager()
     title = models.CharField(max_length=254)
+    
+    def __unicode__(self):
+        return self.title
 
 class TestTag(models.Model):
     objects = MongoDBManager()
     name = models.CharField(max_length=254)
+    
+    def __unicode__(self):
+        return self.name
 
 class TestArticle(models.Model):
     objects = MongoDBManager()
@@ -20,3 +26,16 @@ class TestArticle(models.Model):
     
     def __unicode__(self):
         return self.title
+
+class TestAuthor(models.Model):
+    objects = MongoDBManager()
+    name = models.CharField(max_length=254)
+    
+    def __unicode__(self):
+        return self.name
+
+class TestBook(models.Model):
+    objects = MongoDBManager()
+    authors = MongoDBManyToManyField(TestAuthor)
+    text = models.TextField()
+

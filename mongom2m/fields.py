@@ -226,7 +226,65 @@ class MongoDBM2MRelatedManager(object):
         #print 'Manager get_db_prep_value', self.values
         return [self.get_db_prep_value_embedded_instance(obj) for obj in self.objects]
 
-class MongoDBManyToManyField(models.Field):
+def create_through(model, to):
+    # Re-get the to model so that Django recognizes it correctly when verifying the ForeignKeys.
+    # The model is not yet gettable because it's being defined right now, but Django won't mind.
+    to = models.get_model(to._meta.app_label, to._meta.object_name.lower())
+    # Create a dummy 'through' model for MongoDBManyToMany relations. Django assumes there is a real
+    # database model providing the relationship, so we simulate it. This model has to have
+    # a ForeignKey relationship to both models.
+    obj_name = to._meta.object_name + 'Relationship'
+    class Through(models.Model):
+        print 'Defining class for', obj_name
+        _test = obj_name
+        locals()[to._meta.object_name.lower()] = models.ForeignKey(to)
+        locals()[model._meta.object_name.lower()] = models.ForeignKey(model)
+    # Remove old model from Django's model registry, because it would be a duplicate
+    from django.db.models.loading import cache
+    model_dict = cache.app_models.get(Through._meta.app_label)
+    print Through._meta.app_label, model_dict
+    del model_dict[Through._meta.module_name]
+    # Rename the model
+    Through._meta.object_name = obj_name
+    Through._meta.module_name = obj_name.lower()
+    Through._meta.db_table = Through._meta.app_label + ' ' + Through._meta.module_name
+    Through._meta.verbose_name = to._meta.verbose_name + ' relationship'
+    Through._meta.verbose_name_plural = to._meta.verbose_name_plural + ' relationships'
+    # Add new model to Django's model registry
+    cache.register_models(Through._meta.app_label, Through)
+    return Through
+
+class MongoDBManyToManyRelationDescriptor(object):
+    """
+    This descriptor returns the 'through' model used in Django admin to access the
+    ManyToManyField objects for inlines. It's implemented by the MongoDBManyToManyThrough
+    class, which simulates a data model.
+    """
+    def __init__(self, through):
+        self.through = through
+
+class MongoDBManyToManyRel(object):
+    """
+    This object holds the information of the M2M relationship.
+    It's accessed by Django admin/forms in various contexts, and we also
+    use it internally. We try to simulate what's needed by Django.
+    """
+    def __init__(self, field, to, related_name, embed):
+        self.model = None # added later from contribute_to_class
+        self.through = None # added later from contribute_to_class
+        self.field = field
+        self.to = to
+        self.related_name = related_name
+        self.embed = embed
+        # Required for Django admin/forms to work.
+        self.multiple = True
+        self.field_name = self.to._meta.pk.name
+        self.limit_choices_to = None
+    
+    def is_hidden(self):
+        return False
+
+class MongoDBManyToManyField(models.ManyToManyField):#models.Field):
     """
     A generic MongoDB many-to-many field that can store embedded copies of
     the referenced objects. Inherits from djangotoolbox.fields.ListField.
@@ -249,28 +307,35 @@ class MongoDBManyToManyField(models.Field):
     article.categories.all() - Returns all the categories that belong to the article
     category.article_set.all() - Returns all the articles that belong to the category
     """
-    __metaclass__ = models.SubfieldBase
+    #__metaclass__ = models.SubfieldBase
     description = 'ManyToMany field with references and optional embedded objects'
     
-    def __init__(self, rel, related_name=None, embed=False, default=None, *args, **kwargs):
-        self._mongom2m_rel = rel
-        self._mongom2m_related_name = related_name
-        self._mongom2m_embed = embed
+    def __init__(self, to, related_name=None, embed=False, default=None, *args, **kwargs):
         # The default value will be an empty MongoDBM2MRelatedManager
-        kwargs['default'] = MongoDBM2MRelatedManager(self, self._mongom2m_rel, self._mongom2m_embed)
-        super(MongoDBManyToManyField, self).__init__(*args, **kwargs)
+        kwargs['default'] = MongoDBM2MRelatedManager(self, to, embed)
+        kwargs['rel'] = MongoDBManyToManyRel(self, to, related_name, embed)
+        # Call Field, not super, to skip Django's ManyToManyField extra stuff we don't need
+        models.Field.__init__(self, *args, **kwargs)
     
     def contribute_to_class(self, model, name, *args, **kwargs):
+        self.rel.model = model
+        self.rel.through = create_through(self.rel.model, self.rel.to)
+        print 'Created through for', self.rel.model, self.rel.to, '=>', self.rel.through._test
+        # Call Field, not super, to skip Django's ManyToManyField extra stuff we don't need
+        models.Field.contribute_to_class(self, model, name, *args, **kwargs)
+        # Determine related name automatically unless set
+        if not self.rel.related_name:
+            self.rel.related_name = model._meta.object_name.lower() + '_set'
+        #if hasattr(self.rel.to, self.rel.related_name):
+        #    # Attribute name already taken, raise error
+        #    raise Exception(u'Related name ' + unicode(self.rel.to._meta.object_name) + u'.' + unicode(self.rel.related_name) + u' is already used by another field, please choose another name with ' + unicode(name) + u' = ' + unicode(self.__class__.__name__) + u'(related_name=xxx)')
         # Add the reverse relationship
-        if not self._mongom2m_related_name:
-            self._mongom2m_related_name = model._meta.object_name.lower() + '_set'
-        if hasattr(self._mongom2m_rel, self._mongom2m_related_name):
-            # Attribute name already taken, raise error
-            raise Exception(u'Related name ' + unicode(self._mongom2m_rel._meta.object_name) + u'.' + unicode(self._mongom2m_related_name) + u' is already used by another field, please choose another name with ' + unicode(name) + u' = ' + unicode(self.__class__.__name__) + u'(related_name=xxx)')
-        reverse_descriptor = MongoDBM2MReverseDescriptor(model, self, self._mongom2m_rel, self._mongom2m_embed)
-        #print 'Adding reverse descriptor as', unicode(self._mongom2m_rel._meta.object_name) + u'.' + unicode(self._mongom2m_related_name)
-        setattr(self._mongom2m_rel, self._mongom2m_related_name, reverse_descriptor)
-        super(MongoDBManyToManyField, self).contribute_to_class(model, name, *args, **kwargs)
+        setattr(self.rel.to, self.rel.related_name, MongoDBM2MReverseDescriptor(model, self, self.rel.to, self.rel.embed))
+        # Add the relationship descriptor to the model class for Django admin/forms to work
+        #print 'Creating descriptor for', self.rel.through
+        descriptor = MongoDBManyToManyRelationDescriptor(self.rel.through)
+        #print 'Setting descriptor as', self.name
+        setattr(model, self.name, descriptor)
     
     def db_type(self, *args, **kwargs):
         return 'MongoDBManyToManyField'
@@ -279,7 +344,7 @@ class MongoDBManyToManyField(models.Field):
         # The Python value is a MongoDBM2MRelatedManager, and we'll store the models it contains as a special list.
         if not isinstance(value, MongoDBM2MRelatedManager):
             # Convert other values to manager objects first
-            value = MongoDBM2MRelatedManager(self, self._mongom2m_rel, self._mongom2m_embed, value)
+            value = MongoDBM2MRelatedManager(self, self.rel.to, self.rel.embed, value)
         # Let the manager to the conversion
         return value.get_db_prep_value()
     
@@ -287,7 +352,7 @@ class MongoDBManyToManyField(models.Field):
         # The database value is a custom MongoDB list of ObjectIds and embedded models (if embed is enabled).
         # We convert it into a MongoDBM2MRelatedManager object to hold the Django models.
         if not isinstance(value, MongoDBM2MRelatedManager):
-            manager = MongoDBM2MRelatedManager(self, self._mongom2m_rel, self._mongom2m_embed)
+            manager = MongoDBM2MRelatedManager(self, self.rel.to, self.rel.embed)
             manager.to_python(value)
             value = manager
         return value
@@ -295,8 +360,9 @@ class MongoDBManyToManyField(models.Field):
     def formfield(self, **kwargs):
         defaults = {
             'form_class': ModelMultipleChoiceField,
-            'queryset': self._mongom2m_rel.objects.all(),
+            'queryset': self.rel.to.objects.all(),
         }
         defaults.update(kwargs)
-        return super(MongoDBManyToManyField, self).formfield(**defaults)
+        #return super(MongoDBManyToManyField, self).formfield(**defaults)
+        return models.Field.formfield(self, **defaults)
 
