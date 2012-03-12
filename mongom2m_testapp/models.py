@@ -1,5 +1,5 @@
 from django.db import models
-from fields import MongoDBManyToManyField
+from mongom2m.fields import MongoDBManyToManyField
 from django_mongodb_engine.contrib import MongoDBManager
 
 class TestCategory(models.Model):
