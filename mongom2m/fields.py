@@ -167,6 +167,14 @@ class MongoDBM2MRelatedManager(object):
         self.objects = []
         return self
     
+    def __contains__(self, obj):
+        """
+        Helper to enable 'object in container' by comparing IDs.
+        """
+        if hasattr(obj, 'pk'): obj = obj.pk
+        elif hasattr(obj, 'id'): obj = obj.id
+        return ObjectId(obj) in [ObjectId(o['pk']) for o in self.objects]
+    
     def __iter__(self):
         """
         Iterator is used by Django admin's ModelMultipleChoiceField.
@@ -231,6 +239,9 @@ class MongoDBM2MRelatedManager(object):
         """
         Convert a database value to Django model instances managed by this manager.
         """
+        if isinstance(values, models.Model):
+            # Single value given as parameter
+            values = [values]
         self.objects = [self.to_python_embedded_instance(value) for value in values]
     
     def get_db_prep_value_embedded_instance(self, obj):
@@ -269,9 +280,6 @@ def create_through(field, model, to):
     a ForeignKey relationship to both models. We will also override the save() and delete()
     methods to pass the adding and removing of related objects to the relation manager.
     """
-    # Re-get the to model so that Django recognizes it correctly when verifying the ForeignKeys.
-    # The model is not yet gettable because it's being defined right now, but Django won't mind.
-    to = models.get_model(to._meta.app_label, to._meta.object_name.lower())
     obj_name = to._meta.object_name + 'Relationship'
     to_module_name = to._meta.module_name
     model_module_name = model._meta.module_name
@@ -320,7 +328,7 @@ def create_through(field, model, to):
             return ThroughQuerySet(self.model)
     class Through(models.Model):
         class Meta:
-            auto_created = True
+            auto_created = model
         objects = ThroughManager()
         locals()[to_module_name] = models.ForeignKey(to, null=True, blank=True)
         locals()[model_module_name] = models.ForeignKey(model, null=True, blank=True)
@@ -391,6 +399,10 @@ class MongoDBManyToManyRel(object):
     
     def is_hidden(self):
         return False
+    
+    def get_related_field(self, *args, **kwargs):
+        print 'get_related_field', args, kwargs
+        return self.field
 
 class MongoDBManyToManyField(models.ManyToManyField):
     """
@@ -437,7 +449,7 @@ class MongoDBManyToManyField(models.ManyToManyField):
         #    # Attribute name already taken, raise error
         #    raise Exception(u'Related name ' + unicode(self.rel.to._meta.object_name) + u'.' + unicode(self.rel.related_name) + u' is already used by another field, please choose another name with ' + unicode(name) + u' = ' + unicode(self.__class__.__name__) + u'(related_name=xxx)')
         # Add the reverse relationship
-        setattr(self.rel.to, self.rel.related_name, MongoDBM2MReverseDescriptor(model, self, self.rel.to, self.rel.embed))
+        setattr(self.rel.to, self.rel.related_name, MongoDBM2MReverseDescriptor(model, self, self.rel, self.rel.embed))
         # Add the relationship descriptor to the model class for Django admin/forms to work
         setattr(model, self.name, MongoDBManyToManyRelationDescriptor(self, self.rel.through))
     
