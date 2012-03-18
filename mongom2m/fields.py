@@ -1,4 +1,5 @@
 from djangotoolbox.fields import ListField, DictField, EmbeddedModelField, AbstractIterableField
+from django.db.models.signals import m2m_changed
 from pymongo.objectid import ObjectId
 from django_mongodb_engine.contrib import MongoDBManager
 from django.forms import ModelMultipleChoiceField
@@ -108,14 +109,24 @@ class MongoDBM2MRelatedManager(object):
     Internally, we store the objects as dicts that contain keys pk and obj.
     The obj key is None when the object has not yet been loaded from the db.
     """
-    def __init__(self, field, rel, embed, objects=[]):
+    def __init__(self, field, rel, embed, objects=[], model_instance=None):
+        self.model_instance = model_instance
         self.field = field
         self.rel = rel
         self.embed = embed
         self.objects = list(objects) # make copy of the list to avoid problems
     
+    def _with_model_instance(self, model_instance):
+        """
+        Create a new copy of this manager for a specific model instance. This
+        is called when the field is being accessed through a model instance.
+        """
+        return MongoDBM2MRelatedManager(self.field, self.rel, self.embed, self.objects, model_instance=model_instance)
+    
     def __call__(self):
-        # This is used when creating a default value for the field
+        """
+        This is used when creating a default value for the field
+        """
         return MongoDBM2MRelatedManager(self.field, self.rel, self.embed, self.objects)
     
     def count(self):
@@ -126,6 +137,8 @@ class MongoDBM2MRelatedManager(object):
         Add model instance(s) to the M2M field. The objects can be real
         Model instances or just ObjectIds (or strings representing ObjectIds).
         """
+        using = 'default' # should see if we can carry this over from somewhere
+        add_objs = []
         for obj in objs:
             if isinstance(obj, (ObjectId, basestring)):
                 # It's an ObjectId
@@ -136,7 +149,21 @@ class MongoDBM2MRelatedManager(object):
                 pk = ObjectId(obj.pk)
                 instance = obj
             if not pk in (obj['pk'] for obj in self.objects):
-                self.objects.append({'pk':pk, 'obj':instance})
+                add_objs.append({'pk':pk, 'obj':instance})
+        
+        # Calculate list of object ids that are being added
+        add_obj_ids = [str(obj['pk']) for obj in add_objs]
+        
+        # Send pre_add signal (instance should be Through instance but it's the manager instance for now)
+        m2m_changed.send(self.rel.through, instance=self.model_instance, action='pre_add', reverse=False, model=self.rel.to, pk_set=add_obj_ids, using=using)
+        
+        # Commit the add
+        for obj in add_objs:
+            self.objects.append({'pk':obj['pk'], 'obj':obj['obj']})
+        
+        # Send post_add signal (instance should be Through instance but it's the manager instance for now)
+        m2m_changed.send(self.rel.through, instance=self.model_instance, action='post_add', reverse=False, model=self.rel.to, pk_set=add_obj_ids, using=using)
+        
         return self
     
     def create(**kwargs):
@@ -156,7 +183,19 @@ class MongoDBM2MRelatedManager(object):
         """
         obj_ids = set([ObjectId(obj) if isinstance(obj, (ObjectId, basestring)) else ObjectId(obj.pk) for obj in objs])
         #print 'Removing object(s)', obj_ids, 'from', self.objects
+        
+        # Calculate list of object ids that will be removed
+        removed_obj_ids = [str(obj['pk']) for obj in self.objects if obj['pk'] in obj_ids]
+        
+        # Send the pre_remove signal
+        m2m_changed.send(self.rel.through, instance=self.model_instance, action='pre_remove', reverse=False, model=self.rel.to, pk_set=removed_obj_ids)
+        
+        # Commit the remove
         self.objects = [obj for obj in self.objects if obj['pk'] not in obj_ids]
+        
+        # Send the post_remove signal
+        m2m_changed.send(self.rel.through, instance=self.model_instance, action='post_remove', reverse=False, model=self.rel.to, pk_set=removed_obj_ids)
+        
         return self
     
     def clear(self):
@@ -164,7 +203,18 @@ class MongoDBM2MRelatedManager(object):
         Clear all objecst in the list. The related objects are not
         deleted from the database.
         """
+        # Calculate list of object ids that will be removed
+        removed_obj_ids = [str(obj['pk']) for obj in self.objects]
+        
+        # Send the pre_clear signal
+        m2m_changed.send(self.rel.through, instance=self.model_instance, action='pre_clear', reverse=False, model=self.rel.to, pk_set=removed_obj_ids)
+        
+        # Commit the clear
         self.objects = []
+        
+        # Send the post_clear signal
+        m2m_changed.send(self.rel.through, instance=self.model_instance, action='post_clear', reverse=False, model=self.rel.to, pk_set=removed_obj_ids)
+        
         return self
     
     def __contains__(self, obj):
@@ -381,12 +431,35 @@ class MongoDBManyToManyRelationDescriptor(object):
     ManyToManyField objects for inlines. It's implemented by the MongoDBManyToManyThrough
     class, which simulates a data model. This class also handles the attribute assignment
     from the MongoDB raw fields, which must be properly converted to Python objects.
+    
+    In other words, when you have a many-to-many field called categories on model Article,
+    this descriptor is the value of Article.categories. When you access the value
+    Article.categories.through, you get the through attribute of this object.
     """
     def __init__(self, field, through):
         self.field = field
         self.through = through
     
+    def __get__(self, obj, type=None):
+        """
+        A field is being accessed on a model instance. Add the model instance to the
+        related manager so we can use it for signals etc.
+        """
+        if obj:
+            manager = obj.__dict__[self.field.name]
+            if not manager.model_instance:
+                manager = manager._with_model_instance(obj)
+                # Store it in the model for future reference
+                obj.__dict__[self.field.name] = manager
+            return manager
+        else:
+            return type.__dict__[self.field.name]
+    
     def __set__(self, obj, value):
+        """
+        Attributes are being assigned to model instance. We redirect the assignments
+        to the model instance's fields instances.
+        """
         obj.__dict__[self.field.name] = self.field.to_python(value)
 
 class MongoDBManyToManyRel(object):
@@ -437,12 +510,11 @@ class MongoDBManyToManyField(models.ManyToManyField):
     article.categories.all() - Returns all the categories that belong to the article
     category.article_set.all() - Returns all the articles that belong to the category
     """
-    #__metaclass__ = models.SubfieldBase
     description = 'ManyToMany field with references and optional embedded objects'
     
     def __init__(self, to, related_name=None, embed=False, default=None, *args, **kwargs):
         kwargs['rel'] = MongoDBManyToManyRel(self, to, related_name, embed)
-        # The default value will be an empty MongoDBM2MRelatedManager
+        # The default value will be an empty MongoDBM2MRelatedManager that's not connected to a model instance
         kwargs['default'] = MongoDBM2MRelatedManager(self, kwargs['rel'], embed)
         # Call Field, not super, to skip Django's ManyToManyField extra stuff we don't need
         models.Field.__init__(self, *args, **kwargs)

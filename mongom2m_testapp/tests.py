@@ -1,5 +1,6 @@
 from django.test import TestCase
 from django.db import models
+from django.db.models.signals import m2m_changed
 from mongom2m.fields import MongoDBManyToManyField
 from django_mongodb_engine.contrib import MongoDBManager
 from djangotoolbox.fields import ListField, EmbeddedModelField
@@ -177,4 +178,78 @@ class MongoDBManyToManyFieldTest(TestCase):
         """
         Test signals emitted by various M2M operations.
         """
-
+        # Create some sample data
+        category1 = TestCategory(title='test cat 1')
+        category1.save()
+        category2 = TestCategory(title='test cat 2')
+        category2.save()
+        tag1 = TestTag(name='test tag 1')
+        tag1.save()
+        tag2 = TestTag(name='test tag 2')
+        tag2.save()
+        article = TestArticle(title='test article 1', text='test article 1 text', main_category=category1)
+        
+        # Test pre_add / post_add
+        self.on_add_called = 0
+        def on_add(sender, instance, action, reverse, model, pk_set, *args, **kwargs):
+            self.on_add_called += 1
+            self.assertEqual(sender, TestArticle.categories.through) # sender is always the autocreated through model
+            self.assertEqual(instance, article)
+            self.assertEqual(model, TestCategory) # model is always the to-side of the relation
+            self.assertIn(action, ('pre_add', 'post_add'))
+            self.assertEqual(reverse, False)
+            self.assertEqual(set(pk_set), set([category1.id]))
+            # before add, the current categories should be empty
+            if action == 'pre_add':
+                self.assertEqual(article.categories.count(), 0)
+            # after add, the current categories should be 1
+            else:
+                self.assertEqual(article.categories.count(), 1)
+        m2m_changed.connect(on_add)
+        article.categories.add(category1)
+        self.assertEqual(self.on_add_called, 2)
+        m2m_changed.disconnect(on_add)
+        
+        # Test pre_remove / post_remove
+        self.on_remove_called = 0
+        def on_remove(sender, instance, action, reverse, model, pk_set, *args, **kwargs):
+            self.on_remove_called += 1
+            self.assertEqual(sender, TestArticle.categories.through) # sender is always the autocreated through model
+            self.assertEqual(instance, article)
+            self.assertEqual(model, TestCategory) # model is always the to-side of the relation
+            self.assertIn(action, ('pre_remove', 'post_remove'))
+            self.assertEqual(reverse, False)
+            self.assertEqual(set(pk_set), set([category1.id]))
+            # before remove, the current categories should be 1
+            if action == 'pre_remove':
+                self.assertEqual(article.categories.count(), 1)
+            # after remove, the current categories should be empty
+            else:
+                self.assertEqual(article.categories.count(), 0)
+        m2m_changed.connect(on_remove)
+        article.categories.remove(category1)
+        self.assertEqual(self.on_remove_called, 2)
+        m2m_changed.disconnect(on_remove)
+        
+        # Test pre_clear / post_clear
+        article.categories.add(category1)
+        self.on_clear_called = 0
+        def on_clear(sender, instance, action, reverse, model, pk_set, *args, **kwargs):
+            self.on_clear_called += 1
+            self.assertEqual(sender, TestArticle.categories.through) # sender is always the autocreated through model
+            self.assertEqual(instance, article)
+            self.assertEqual(model, TestCategory) # model is always the to-side of the relation
+            self.assertIn(action, ('pre_clear', 'post_clear'))
+            self.assertEqual(reverse, False)
+            self.assertEqual(set(pk_set), set([category1.id]))
+            # before remove, the current categories should be 1
+            if action == 'pre_clear':
+                self.assertEqual(article.categories.count(), 1)
+            # after remove, the current categories should be empty
+            else:
+                self.assertEqual(article.categories.count(), 0)
+        m2m_changed.connect(on_clear)
+        article.categories.clear()
+        self.assertEqual(self.on_clear_called, 2)
+        m2m_changed.disconnect(on_clear)
+        

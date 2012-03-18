@@ -76,6 +76,23 @@ To enable embedding, just add the embed=True keyword argument to the field:
         categories = MongoDBManyToManyField(Category, embed=True)
 
 
+Signals
+-------
+
+MongoDBManyToManyField supports Django's m2m\_changed signal, where the action can be:
+
+* pre\_add (triggered before adding object(s) to the field)
+* post\_add (triggered after adding object(s) to the field)
+* pre\_remove (triggered before removing object(s) from the field)
+* post\_remove (triggered after removing object(s) from the field)
+* pre\_clear (triggered before clearing all object(s) from the field)
+* post\_clear (triggered after clearing all object(s) from the field)
+
+The only difference is that the instance argument of the signal is (at least currently)
+not an intermediate 'through' model instance, but the actual model instance that contains
+the many-to-many field. Also, currently, reverse relationship signals are not sent.
+
+
 Indexing
 --------
 
