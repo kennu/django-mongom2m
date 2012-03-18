@@ -212,7 +212,14 @@ class MongoDBM2MRelatedManager(object):
         Convert a single embedded instance value stored in the database to an object
         we can store in the internal objects list.
         """
-        if self.embed:
+        if isinstance(embedded_instance, ObjectId):
+            # It's an object id, probably from a ListField(ForeignKey) migration
+            return {'pk':embedded_instance, 'obj':None}
+        elif isinstance(embedded_instance, basestring):
+            # Assume it's a string formatted object id, probably from a ListField(ForeignKey) migration
+            return {'pk':ObjectId(embedded_instance), 'obj':None}
+        elif self.embed:
+            # Try to load the embedded object contents if possible
             if isinstance(embedded_instance, dict):
                 # Convert the embedded value from dict to model
                 data = {}
@@ -225,6 +232,9 @@ class MongoDBM2MRelatedManager(object):
             else:
                 # Assume it's already a model
                 obj = embedded_instance
+            # Make sure the pk is a string (not ObjectId) to be compatible with django-mongodb-engine
+            if isinstance(obj.pk, ObjectId):
+                obj.pk = str(obj.pk)
             return {'pk':ObjectId(obj.pk), 'obj':obj}
         else:
             # No embedded value, only ObjectId

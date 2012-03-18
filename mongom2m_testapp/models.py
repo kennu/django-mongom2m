@@ -1,4 +1,5 @@
 from django.db import models
+from djangotoolbox.fields import ListField, EmbeddedModelField
 from mongom2m.fields import MongoDBManyToManyField
 from django_mongodb_engine.contrib import MongoDBManager
 
