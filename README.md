@@ -25,6 +25,17 @@ can be overridden with the related\_name attribute) to return the related object
 It uses MongoDB's raw\_query() to find all related model objects. Because of this, any data model that
 uses MongoDBManyToManyField() must have a default MongoDBManager() instead of Django's normal Manager().
 
+
+Django compability
+------------------
+
+This implementation has been tweaked to be mostly compatible with Django admin, which means you can use
+TabularInlines or filter\_horizontal and filter\_vertical to administer the many-to-many fields.
+
+Don't be surprised, however, if some things don't work, because it's all emulated. There is no real
+"through" table in the database to provide the many-to-many association.
+
+
 Usage
 -----
 
@@ -63,6 +74,48 @@ To enable embedding, just add the embed=True keyword argument to the field:
 
     class Article(models.Model):
         categories = MongoDBManyToManyField(Category, embed=True)
+
+
+Indexing
+--------
+
+Many-to-many related querying will use the "id" field the embedded model fields,
+whether full embedding is used or not. If full embedding is not used, then those
+fields will be sub-objects containing only an "id" field.
+
+In either case, you should index the "id" fields properly. This can be done as follows:
+
+    from django.db import connection
+    connection.get_collection('blog_article').ensure_index([('categories.id', 1)])
+
+(Replacing, of course, 'blog\_article' and 'categories' with the appropriate collection
+and field names.)
+
+
+Migrating
+---------
+
+If you have an old model that's using something like this:
+
+    categories = ListField(EmbeddedField(Category))
+
+You can normally change it to:
+
+    categories = MongoDBManyToManyField(Category)
+
+The many-to-many field's data is almost identical to that of the embedded field,
+except that MongoDB object ids are stored as ObjectIds instead of strings. When
+the field is loaded from the datatabase, the id strings are automatically converted
+to ObjectIds. So the next time the model containing the field is saved, the ids
+are written correctly.
+
+This basically means that you may need to do a migration like this:
+
+    for article in Article.objects.all():
+        article.save()
+
+Also make sure that the "id" field is properly indexed (see previous section).
+
 
 BSD License
 -----------
