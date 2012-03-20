@@ -1,7 +1,7 @@
 Django MongoDB ManyToManyField Implementation
 =============================================
 
-Created by Kenneth Falck <kennu@iki.fi> 2012 (http://kfalck.net)
+Created in 2012 by Kenneth Falck <kennu@iki.fi> http://kfalck.net.
 
 Released under the standard BSD License (see below).
 
@@ -137,7 +137,7 @@ Also make sure that the "id" field is properly indexed (see previous section).
 BSD License
 -----------
 
-Copyright (c) 2012, Kenneth Falck
+Copyright (c) 2012 Kenneth Falck <kennu@iki.fi> http://kfalck.net
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
