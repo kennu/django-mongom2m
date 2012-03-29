@@ -278,14 +278,22 @@ class MongoDBM2MRelatedManager(object):
                         data[str(field.attname)] = embedded_instance[field.column]
                     except KeyError:
                         pass
+                # If we only got the id, give up to avoid creating an invalid/empty model instance
+                if len(data) <= 1:
+                    return {'pk':ObjectId(embedded_instance[self.rel.to._meta.pk.column]), 'obj':None}
+                # Otherwise create the model instance from the fields
                 obj = self.rel.to(**data)
+                # Make sure the pk in the model instance is a string (not ObjectId) to be compatible with django-mongodb-engine
+                if isinstance(obj.pk, ObjectId):
+                    obj.pk = str(obj.pk)
+                return {'pk':ObjectId(obj.pk), 'obj':obj}
             else:
                 # Assume it's already a model
                 obj = embedded_instance
-            # Make sure the pk is a string (not ObjectId) to be compatible with django-mongodb-engine
-            if isinstance(obj.pk, ObjectId):
-                obj.pk = str(obj.pk)
-            return {'pk':ObjectId(obj.pk), 'obj':obj}
+                # Make sure the pk is a string (not ObjectId) to be compatible with django-mongodb-engine
+                if isinstance(obj.pk, ObjectId):
+                    obj.pk = str(obj.pk)
+                return {'pk':ObjectId(obj.pk), 'obj':obj}
         else:
             # No embedded value, only ObjectId
             if isinstance(embedded_instance, dict):
