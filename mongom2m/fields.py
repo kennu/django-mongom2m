@@ -340,7 +340,7 @@ def create_through(field, model, to):
     a ForeignKey relationship to both models. We will also override the save() and delete()
     methods to pass the adding and removing of related objects to the relation manager.
     """
-    obj_name = to._meta.object_name + 'Relationship'
+    obj_name = model._meta.object_name + to._meta.object_name + 'Relationship'
     to_module_name = to._meta.module_name
     model_module_name = model._meta.module_name
     class ThroughQuerySet(object):
@@ -415,7 +415,7 @@ def create_through(field, model, to):
     del model_dict[Through._meta.module_name]
     # Rename the model
     Through.__name__ = obj_name
-    Through._meta.app_label = to._meta.app_label
+    Through._meta.app_label = model._meta.app_label
     Through._meta.object_name = obj_name
     Through._meta.module_name = obj_name.lower()
     Through._meta.db_table = Through._meta.app_label + '_' + Through._meta.module_name
