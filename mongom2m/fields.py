@@ -64,6 +64,7 @@ class MongoDBM2MQuerySet(object):
     def get(self, *args, **kwargs):
         if 'pk' in kwargs:
             pk = ObjectId(kwargs['pk'])
+            print 'Trying to get pk', pk, 'from', self.objects
             for obj in self.objects:
                 if pk == obj['pk']:
                     return self._get_obj(obj)
@@ -96,7 +97,7 @@ class MongoDBM2MReverseManager(object):
         """
         Emulate an intermediate 'through' relationship query set.
         """
-        objects = [{'pk':obj.pk, 'obj':obj} for obj in self.all()]
+        objects = [{'pk':ObjectId(obj.pk), 'obj':obj} for obj in self.all()]
         return MongoDBM2MQuerySet(self.rel, self.rel.to, objects, use_cached=True, appear_as_relationship=(model, None, to_instance, model_module_name, to_module_name))
 
 class MongoDBM2MReverseDescriptor(object):
@@ -398,9 +399,13 @@ def create_through(field, model, to):
                 #print 'get:', self.model_instance, field, field.name
                 if direction == 'r':
                     # Query in reverse
-                    self.to_instance = model.objects.get(pk=to_id)
-                    queryset = self.related_manager.all(appear_as_relationship=(self.model, None, self.to_instance, model_module_name, to_module_name)).using(self.db)
-                    return queryset.get(pk=model_id)
+                    self.to_instance = to.objects.get(pk=to_id)
+                    self.reverse_manager = getattr(self.to_instance, field.rel.related_name)
+                    queryset = self.reverse_manager._relationship_query_set(self.model, self.to_instance, model_module_name, to_module_name).using(self.db)
+                    print 'Getting reverse', self.to_instance, model_module_name, model_id
+                    obj = queryset.get(pk=model_id)
+                    print '=', obj
+                    return obj
                 else:
                     self.model_instance = model.objects.get(pk=model_id)
                     self.related_manager = getattr(self.model_instance, field.name)
