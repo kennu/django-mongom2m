@@ -1,5 +1,6 @@
 from djangotoolbox.fields import ListField, DictField, EmbeddedModelField, AbstractIterableField
 from django.db.models.signals import m2m_changed
+from django.utils.translation import ugettext_lazy as _
 from pymongo.objectid import ObjectId
 from django_mongodb_engine.contrib import MongoDBManager
 from django.forms import ModelMultipleChoiceField
@@ -12,15 +13,14 @@ class MongoDBM2MQuerySet(object):
     Lazily loads non-embedded objects when iterated.
     If embed=False, objects are always loaded from database.
     """
-    def __init__(self, rel, model, objects, use_cached, appear_as_relationship=(None, None, None, None)):
+    def __init__(self, rel, model, objects, use_cached, appear_as_relationship=(None, None, None, None, None)):
         self.db = 'default'
         self.rel = rel
         self.objects = list(objects) # make a copy of the list to avoid problems
         self.model = model
-        self.appear_as_relationship, self.rel_model_instance, self.rel_model_name, self.rel_to_name = appear_as_relationship # appear as an intermediate m2m model
-        if self.appear_as_relationship:
-            self.model = self.appear_as_relationship
-        #print 'Creating QuerySet', self.model
+        self.appear_as_relationship_model, self.rel_model_instance, self.rel_to_instance, self.rel_model_name, self.rel_to_name = appear_as_relationship # appear as an intermediate m2m model
+        if self.appear_as_relationship_model:
+            self.model = self.appear_as_relationship_model
         if not use_cached:
             # Reset any cached instances
             self.objects = [{'pk':obj['pk'], 'obj':None} for obj in self.objects]
@@ -29,10 +29,14 @@ class MongoDBM2MQuerySet(object):
         if not obj['obj']:
             # Load referred instance from db and keep in memory
             obj['obj'] = self.rel.to.objects.get(pk=obj['pk'])
-        if self.appear_as_relationship:
+        if self.appear_as_relationship_model:
             # Wrap us in a relationship class
-            args = { 'pk':str(self.rel_model_instance.pk) + '$' + str(obj['pk']), self.rel_model_name:self.rel_model_instance, self.rel_to_name:obj['obj'] }
-            wrapper = self.appear_as_relationship(**args)
+            if self.rel_model_instance:
+                args = { 'pk':str(self.rel_model_instance.pk) + '$f$' + str(obj['pk']), self.rel_model_name:self.rel_model_instance, self.rel_to_name:obj['obj'] }
+            else:
+                # Reverse
+                args = { 'pk':str(self.rel_to_instance.pk) + '$r$' + str(obj['pk']), self.rel_model_name:obj['obj'], self.rel_to_name:self.rel_to_instance }
+            wrapper = self.appear_as_relationship_model(**args)
             return wrapper
         return obj['obj']
     
@@ -55,11 +59,9 @@ class MongoDBM2MQuerySet(object):
         return self
     
     def filter(self, *args, **kwargs):
-        #print 'MongoDBM2MQuerySet filter', args, kwargs
         return self
     
     def get(self, *args, **kwargs):
-        #print 'MongoDBM2MQuerySet get', args, kwargs
         if 'pk' in kwargs:
             pk = ObjectId(kwargs['pk'])
             for obj in self.objects:
@@ -89,6 +91,13 @@ class MongoDBM2MReverseManager(object):
         name = self.field.column + '.' + self.rel.model._meta.pk.column
         pk = ObjectId(self.rel_field.pk)
         return self.model._default_manager.raw_query({name:pk})
+    
+    def _relationship_query_set(self, model, to_instance, model_module_name, to_module_name):
+        """
+        Emulate an intermediate 'through' relationship query set.
+        """
+        objects = [{'pk':obj.pk, 'obj':obj} for obj in self.all()]
+        return MongoDBM2MQuerySet(self.rel, self.rel.to, objects, use_cached=True, appear_as_relationship=(model, None, to_instance, model_module_name, to_module_name))
 
 class MongoDBM2MReverseDescriptor(object):
     def __init__(self, model, field, rel, embed):
@@ -182,7 +191,6 @@ class MongoDBM2MRelatedManager(object):
         not deleted, it's only removed from the list.
         """
         obj_ids = set([ObjectId(obj) if isinstance(obj, (ObjectId, basestring)) else ObjectId(obj.pk) for obj in objs])
-        #print 'Removing object(s)', obj_ids, 'from', self.objects
         
         # Calculate list of object ids that will be removed
         removed_obj_ids = [str(obj['pk']) for obj in self.objects if obj['pk'] in obj_ids]
@@ -356,18 +364,24 @@ def create_through(field, model, to):
             self.model = relationship_model
             self.model_instance = None
             self.related_manager = None
+            self.to_instance = None
             self.db = 'default'
         def filter(self, *args, **kwargs):
-            #print 'ThroughQuerySet filter', args, kwargs
             if model_module_name in kwargs:
+                # Relation, set up for querying by the model
                 self.model_instance = kwargs[model_module_name]
                 self.related_manager = getattr(self.model_instance, field.name)
                 # Now we know enough to retrieve the actual query set
-                queryset = self.related_manager.all(appear_as_relationship=(self.model, self.model_instance, model_module_name, to_module_name)).using(self.db)
+                queryset = self.related_manager.all(appear_as_relationship=(self.model, self.model_instance, None, model_module_name, to_module_name)).using(self.db)
+                return queryset
+            if to_module_name in kwargs:
+                # Reverse relation, set up for querying by the to model
+                self.to_instance = kwargs[to_module_name]
+                self.reverse_manager = getattr(self.to_instance, field.rel.related_name)
+                queryset = self.reverse_manager._relationship_query_set(self.model, self.to_instance, model_module_name, to_module_name).using(self.db)
                 return queryset
             return self
         def exists(self, *args, **kwargs):
-            #print 'ThroughQuerySet exists', args, kwargs
             return False
         def ordered(self, *args, **kwargs):
             return self
@@ -375,22 +389,30 @@ def create_through(field, model, to):
             self.db = db
             return self
         def get(self, *args, **kwargs):
-            #print 'ThroughQuerySet.get', args, kwargs
             # Check if it's a magic key
             if 'pk' in kwargs and isinstance(kwargs['pk'], basestring) and '$' in kwargs['pk']:
-                model_id, to_id = kwargs['pk'].split('$', 1)
-                #print 'Looking up', model_id, 'and', to_id
-                self.model_instance = model.objects.get(pk=model_id)
-                self.related_manager = getattr(self.model_instance, field.name)
-                queryset = self.related_manager.all(appear_as_relationship=(self.model, self.model_instance, model_module_name, to_module_name)).using(self.db)
-                return queryset.get(pk=to_id)
+                model_id, direction, to_id = kwargs['pk'].split('$', 2)
+                if direction == 'r':
+                    # It's a reverse magic key
+                    to_id, model_id = model_id, to_id
+                #print 'get:', self.model_instance, field, field.name
+                if direction == 'r':
+                    # Query in reverse
+                    self.to_instance = model.objects.get(pk=to_id)
+                    queryset = self.related_manager.all(appear_as_relationship=(self.model, None, self.to_instance, model_module_name, to_module_name)).using(self.db)
+                    return queryset.get(pk=model_id)
+                else:
+                    self.model_instance = model.objects.get(pk=model_id)
+                    self.related_manager = getattr(self.model_instance, field.name)
+                    queryset = self.related_manager.all(appear_as_relationship=(self.model, self.model_instance, None, model_module_name, to_module_name)).using(self.db)
+                    return queryset.get(pk=to_id)
             # Normal key
         def __len__(self):
             # Won't work, must be accessed through filter()
-            raise Exception('ThroughQuerySet relation unknown')
+            raise Exception('ThroughQuerySet relation unknown (__len__)')
         def __getitem__(self, key):
             # Won't work, must be accessed through filter()
-            raise Exception('ThroughQuerySet relation unknown')
+            raise Exception('ThroughQuerySet relation unknown (__getitem__)')
     class ThroughManager(MongoDBManager):
         def get_query_set(self):
             return ThroughQuerySet(self.model)
@@ -401,7 +423,7 @@ def create_through(field, model, to):
         locals()[to_module_name] = models.ForeignKey(to, null=True, blank=True)
         locals()[model_module_name] = models.ForeignKey(model, null=True, blank=True)
         def __unicode__(self):
-            return unicode(getattr(self, to_module_name))
+            return unicode(getattr(self, model_module_name)) + u' : ' + unicode(getattr(self, to_module_name))
         def save(self, *args, **kwargs):
             # Don't actually save the model, convert to an add() call instead
             obj = getattr(self, model_module_name)
@@ -410,9 +432,6 @@ def create_through(field, model, to):
             obj.save() # must save parent model because Django admin won't
         def delete(self, *args, **kwargs):
             # Don't actually delete the model, convert to a delete() call instead
-            #import pdb; pdb.set_trace()
-            #print 'delete', args, kwargs
-            #print 'DELETING DUMMY THROUGH', getattr(self, model_module_name), getattr(self, to_module_name)
             obj = getattr(self, model_module_name)
             manager = getattr(obj, field.name)
             manager.remove(getattr(self, to_module_name))
@@ -427,8 +446,8 @@ def create_through(field, model, to):
     Through._meta.object_name = obj_name
     Through._meta.module_name = obj_name.lower()
     Through._meta.db_table = Through._meta.app_label + '_' + Through._meta.module_name
-    Through._meta.verbose_name = to._meta.verbose_name + ' relationship'
-    Through._meta.verbose_name_plural = to._meta.verbose_name_plural + ' relationships'
+    Through._meta.verbose_name = _('%(model)s %(to)s relationship') % {'model':model._meta.verbose_name, 'to':to._meta.verbose_name}
+    Through._meta.verbose_name_plural = _('%(model)s %(to)s relationships') % {'model':model._meta.verbose_name, 'to':to._meta.verbose_name}
     # Add new model to Django's model registry
     cache.register_models(Through._meta.app_label, Through)
     return Through
@@ -492,7 +511,6 @@ class MongoDBManyToManyRel(object):
         return False
     
     def get_related_field(self, *args, **kwargs):
-        print 'get_related_field', args, kwargs
         return self.field
 
 class MongoDBManyToManyField(models.ManyToManyField):
