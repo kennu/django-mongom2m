@@ -1,5 +1,7 @@
 from djangotoolbox.fields import ListField, DictField, EmbeddedModelField, AbstractIterableField
 from django.db.models.signals import m2m_changed
+from django.db.models import get_model
+from django.db.models.fields.related import add_lazy_relation
 from django.utils.translation import ugettext_lazy as _
 from pymongo.objectid import ObjectId
 from django_mongodb_engine.contrib import MongoDBManager
@@ -64,7 +66,6 @@ class MongoDBM2MQuerySet(object):
     def get(self, *args, **kwargs):
         if 'pk' in kwargs:
             pk = ObjectId(kwargs['pk'])
-            print 'Trying to get pk', pk, 'from', self.objects
             for obj in self.objects:
                 if pk == obj['pk']:
                     return self._get_obj(obj)
@@ -362,6 +363,7 @@ def create_through(field, model, to):
     model_module_name = model._meta.module_name
     class ThroughQuerySet(object):
         def __init__(self, relationship_model, *args, **kwargs):
+            self.to = to
             self.model = relationship_model
             self.model_instance = None
             self.related_manager = None
@@ -396,15 +398,12 @@ def create_through(field, model, to):
                 if direction == 'r':
                     # It's a reverse magic key
                     to_id, model_id = model_id, to_id
-                #print 'get:', self.model_instance, field, field.name
                 if direction == 'r':
                     # Query in reverse
-                    self.to_instance = to.objects.get(pk=to_id)
+                    self.to_instance = self.to.objects.get(pk=to_id)
                     self.reverse_manager = getattr(self.to_instance, field.rel.related_name)
                     queryset = self.reverse_manager._relationship_query_set(self.model, self.to_instance, model_module_name, to_module_name).using(self.db)
-                    print 'Getting reverse', self.to_instance, model_module_name, model_id
                     obj = queryset.get(pk=model_id)
-                    print '=', obj
                     return obj
                 else:
                     self.model_instance = model.objects.get(pk=model_id)
@@ -412,6 +411,7 @@ def create_through(field, model, to):
                     queryset = self.related_manager.all(appear_as_relationship=(self.model, self.model_instance, None, model_module_name, to_module_name)).using(self.db)
                     return queryset.get(pk=to_id)
             # Normal key
+            return None
         def __len__(self):
             # Won't work, must be accessed through filter()
             raise Exception('ThroughQuerySet relation unknown (__len__)')
@@ -507,10 +507,11 @@ class MongoDBManyToManyRel(object):
         self.to = to
         self.related_name = related_name
         self.embed = embed
+        self.field_name = self.to._meta.pk.name
         # Required for Django admin/forms to work.
         self.multiple = True
-        self.field_name = self.to._meta.pk.name
         self.limit_choices_to = {}
+    
     
     def is_hidden(self):
         return False
@@ -544,17 +545,19 @@ class MongoDBManyToManyField(models.ManyToManyField):
     description = 'ManyToMany field with references and optional embedded objects'
     
     def __init__(self, to, related_name=None, embed=False, default=None, *args, **kwargs):
-        kwargs['rel'] = MongoDBManyToManyRel(self, to, related_name, embed)
-        # The default value will be an empty MongoDBM2MRelatedManager that's not connected to a model instance
-        kwargs['default'] = MongoDBM2MRelatedManager(self, kwargs['rel'], embed)
         # Call Field, not super, to skip Django's ManyToManyField extra stuff we don't need
+        self._mm2m_to_or_name = to
+        self._mm2m_related_name = related_name
+        self._mm2m_embed = embed
         models.Field.__init__(self, *args, **kwargs)
     
-    def contribute_to_class(self, model, name, *args, **kwargs):
+    def contribute_after_resolving(self, field, to, model):
+        # Setup the main relation helper
+        self.rel = MongoDBManyToManyRel(self, to, self._mm2m_related_name, self._mm2m_embed)
+        # The field's default value will be an empty MongoDBM2MRelatedManager that's not connected to a model instance
+        self.default = MongoDBM2MRelatedManager(self, self.rel, self._mm2m_embed)
         self.rel.model = model
         self.rel.through = create_through(self, self.rel.model, self.rel.to)
-        # Call Field, not super, to skip Django's ManyToManyField extra stuff we don't need
-        models.Field.contribute_to_class(self, model, name, *args, **kwargs)
         # Determine related name automatically unless set
         if not self.rel.related_name:
             self.rel.related_name = model._meta.object_name.lower() + '_set'
@@ -565,6 +568,13 @@ class MongoDBManyToManyField(models.ManyToManyField):
         setattr(self.rel.to, self.rel.related_name, MongoDBM2MReverseDescriptor(model, self, self.rel, self.rel.embed))
         # Add the relationship descriptor to the model class for Django admin/forms to work
         setattr(model, self.name, MongoDBManyToManyRelationDescriptor(self, self.rel.through))
+    
+    def contribute_to_class(self, model, name, *args, **kwargs):
+        self.__m2m_name = name
+        # Call Field, not super, to skip Django's ManyToManyField extra stuff we don't need
+        models.Field.contribute_to_class(self, model, name, *args, **kwargs)
+        # Do the rest after resolving the 'to' relation
+        add_lazy_relation(model, self, self._mm2m_to_or_name, self.contribute_after_resolving)
     
     def db_type(self, *args, **kwargs):
         return 'list'
