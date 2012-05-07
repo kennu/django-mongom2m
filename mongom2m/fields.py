@@ -3,7 +3,7 @@ from django.db.models.signals import m2m_changed
 from django.db.models import get_model
 from django.db.models.fields.related import add_lazy_relation
 from django.utils.translation import ugettext_lazy as _
-from pymongo.objectid import ObjectId
+from bson.objectid import ObjectId
 from django_mongodb_engine.contrib import MongoDBManager
 from django.forms import ModelMultipleChoiceField
 from django.db import models
