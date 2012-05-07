@@ -3,10 +3,15 @@ from django.db.models.signals import m2m_changed
 from django.db.models import get_model
 from django.db.models.fields.related import add_lazy_relation
 from django.utils.translation import ugettext_lazy as _
-from bson.objectid import ObjectId
 from django_mongodb_engine.contrib import MongoDBManager
 from django.forms import ModelMultipleChoiceField
 from django.db import models
+
+# ObjectId has been moved to bson.objectid in newer versions of PyMongo
+try:
+    from bson.objectid import ObjectId
+except ImportError:
+    from pymongo.objectid import ObjectId
 
 class MongoDBM2MQuerySet(object):
     """
