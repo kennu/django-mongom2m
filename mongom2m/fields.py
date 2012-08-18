@@ -7,6 +7,9 @@ from django_mongodb_engine.contrib import MongoDBManager
 from django.forms import ModelMultipleChoiceField
 from django.db import models
 
+# How much to show when query set is viewed in the Python shell
+REPR_OUTPUT_SIZE = 20
+
 # ObjectId has been moved to bson.objectid in newer versions of PyMongo
 try:
     from bson.objectid import ObjectId
@@ -50,6 +53,12 @@ class MongoDBM2MQuerySet(object):
     def __iter__(self):
         for obj in self.objects:
             yield self._get_obj(obj)
+    
+    def __repr__(self):
+       data = list(self)[:REPR_OUTPUT_SIZE + 1] # limit list after conversion because mongodb doesn't use integer indices
+       if len(data) > REPR_OUTPUT_SIZE:
+           data[-1] = "...(remaining elements truncated)..."
+       return repr(data)
     
     def __getitem__(self, key):
         obj = self.objects[key]
